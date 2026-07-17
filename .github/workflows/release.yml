@@ -1,0 +1,123 @@
+name: Release on signed tag
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history & tags)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag signature (SSH)
+        env:
+          SSH_ALLOWED_SIGNERS: ${{ secrets.SSH_ALLOWED_SIGNERS }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [ -z "${SSH_ALLOWED_SIGNERS:-}" ]; then
+            echo "::error::Secret SSH_ALLOWED_SIGNERS is not set - cannot verify signed tag '${TAG}'."
+            exit 1
+          fi
+          # actions/checkout may leave a lightweight tag pointing at the commit,
+          # which drops the annotated/signed tag object. Re-fetch the real tag.
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+
+          # Ensure we actually got an annotated/signed tag object.
+          if [ "$(git cat-file -t "${TAG}")" != "tag" ]; then
+            echo "::error::'${TAG}' is not an annotated/signed tag object."
+            exit 1
+          fi
+
+          # Write the allowed signers file (format: "<email> <ssh-key-type> <key>").
+          printf '%s\n' "$SSH_ALLOWED_SIGNERS" > "${RUNNER_TEMP}/allowed_signers"
+          git config gpg.format ssh
+          git config gpg.ssh.allowedSignersFile "${RUNNER_TEMP}/allowed_signers"
+          echo "Verifying SSH signature of tag ${TAG}..."
+          git tag -v "${TAG}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.21"
+          cache: true
+
+      - name: Build all platforms
+        run: bash go/build.sh all
+
+      - name: Generate changelog from commits
+        id: changelog
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Previous tag (the one right before the current one), if any.
+          PREV_TAG="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")"
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "Range: ${PREV_TAG}..${TAG}"
+            RANGE="${PREV_TAG}..${TAG}"
+            HEADER="## Changes since ${PREV_TAG}"
+          else
+            echo "No previous tag found - using full history."
+            RANGE="${TAG}"
+            HEADER="## Changes"
+          fi
+
+          {
+            echo "$HEADER"
+            echo ""
+            git log --no-merges --pretty=format:'- %s (%h)' "$RANGE"
+            echo ""
+          } > CHANGELOG_RELEASE.md
+
+          echo "Generated release notes:"
+          cat CHANGELOG_RELEASE.md
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p release-assets
+
+          # Package one archive per platform, each containing the platform
+          # binary plus the docs and license.
+          for bin in dist/*; do
+            base="$(basename "$bin")"                 # e.g. wos-client-linux-amd64(.exe)
+            platform="${base#wos-client-}"            # e.g. linux-amd64(.exe)
+            platform="${platform%.exe}"               # strip .exe -> linux-amd64
+            stage="pkg/${platform}"
+            mkdir -p "$stage"
+
+            cp "$bin" "$stage/"
+            cp README.md BACKEND_PROTOCOL.md LICENSE "$stage/"
+
+            if [[ "$base" == *.exe ]]; then
+              (cd pkg && zip -r -q "../release-assets/wos-client-${TAG}-${platform}.zip" "${platform}")
+            else
+              tar -czf "release-assets/wos-client-${TAG}-${platform}.tar.gz" -C pkg "${platform}"
+            fi
+          done
+
+          # JavaScript version as a standalone attachment.
+          cp js/wos-client.js "release-assets/wos-client-${TAG}.js"
+
+          ls -l release-assets/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: CHANGELOG_RELEASE.md
+          files: release-assets/*
+          fail_on_unmatched_files: true
+
+

@@ -1,0 +1,67 @@
+name: Build Go Distribution
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vet:
+    name: Verify (vet)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.21"
+          cache: true
+
+      - name: Vet
+        run: cd go && go vet ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: vet
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.21"
+          cache: true
+
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        run: bash go/build.sh one ${{ matrix.goos }} ${{ matrix.goarch }}
+
+      # Each platform binary is uploaded as its own artifact (its own zip),
+      # instead of one large combined dist zip.
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: wos-client-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/wos-client-${{ matrix.goos }}-${{ matrix.goarch }}*
+          if-no-files-found: error
+
+

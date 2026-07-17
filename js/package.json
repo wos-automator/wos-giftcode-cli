@@ -1,0 +1,17 @@
+{
+  "name": "wos-giftcode-cli-js",
+  "version": "1.0.0",
+  "description": "WOS Gift-Code Redemption Client in JavaScript",
+  "main": "wos-client.js",
+  "bin": {
+    "wos-client": "./wos-client.js"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node wos-client.js"
+  },
+  "license": "GPL-3.0-only"
+}

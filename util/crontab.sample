@@ -1,0 +1,2 @@
+0 0 * * * $HOME/work/cron-wos-codes.sh > /tmp/wos-cron.log 2>&1
+
