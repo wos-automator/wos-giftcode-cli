@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { scrapeWosRewards } from './wos-rewards.js';
+import { scrapeWosRewards } from '../../scrapers/wos-rewards.js';
 
 const originalFetch = globalThis.fetch;
 

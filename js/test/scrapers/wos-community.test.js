@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { scrapeWosCommunity } from './wos-community.js';
+import { scrapeWosCommunity } from '../../scrapers/wos-community.js';
 
 const originalFetch = globalThis.fetch;
 

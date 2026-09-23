@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { scrapePocketGamer } from './pocket-gamer.js';
+import { scrapePocketGamer } from '../../scrapers/pocket-gamer.js';
 
 const originalFetch = globalThis.fetch;
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArgs, combineCodes } from './code-scraper.js';
+import { parseArgs, combineCodes } from '../code-scraper.js';
 
 test('parseArgs returns null outFile when -o is not given', () => {
   assert.deepEqual(parseArgs([]), { outFile: null });
