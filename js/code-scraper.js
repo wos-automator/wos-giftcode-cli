@@ -6,8 +6,7 @@ import { scrapeWosRewards } from './scrapers/wos-rewards.js';
 import { scrapeWosCommunity } from './scrapers/wos-community.js';
 
 // Simple command-line argument parser for -o <file>
-function parseArgs() {
-  const args = argv.slice(2);
+export function parseArgs(args = argv.slice(2)) {
   let outFile = null;
 
   for (let i = 0; i < args.length; i++) {
@@ -23,6 +22,31 @@ function parseArgs() {
   }
 
   return { outFile };
+}
+
+// Merge codes from all sources: any code marked expired by a source is
+// dropped even if another source still lists it as active.
+export function combineCodes({
+  pgCodes = [],
+  wosRewardsActive = [],
+  wosRewardsExpired = [],
+  wosCommunityActive = [],
+  wosCommunityExpired = []
+}) {
+  const activeSet = new Set([...pgCodes, ...wosRewardsActive, ...wosCommunityActive]);
+
+  const expiredSet = new Set(
+    [...wosRewardsExpired, ...wosCommunityExpired].map(c => c.toLowerCase())
+  );
+
+  const finalCodes = [];
+  for (const code of activeSet) {
+    if (!expiredSet.has(code.toLowerCase())) {
+      finalCodes.push(code);
+    }
+  }
+
+  return finalCodes;
 }
 
 async function main() {
@@ -59,20 +83,13 @@ async function main() {
     console.error(`Warning: Failed to scrape WOS Community: ${error.message}`);
   }
 
-  // Combine and deduplicate active codes
-  const activeSet = new Set([...pgCodes, ...wosRewardsActive, ...wosCommunityActive]);
-
-  // Remove codes marked expired by any source (case-insensitive check)
-  const expiredSet = new Set(
-    [...wosRewardsExpired, ...wosCommunityExpired].map(c => c.toLowerCase())
-  );
-  const finalCodes = [];
-
-  for (const code of activeSet) {
-    if (!expiredSet.has(code.toLowerCase())) {
-      finalCodes.push(code);
-    }
-  }
+  const finalCodes = combineCodes({
+    pgCodes,
+    wosRewardsActive,
+    wosRewardsExpired,
+    wosCommunityActive,
+    wosCommunityExpired
+  });
 
   if (finalCodes.length === 0) {
     console.error('Error: No active gift codes found across sources.');
@@ -94,4 +111,7 @@ async function main() {
   }
 }
 
-main();
+const isMainModule = argv[1] && import.meta.url === `file://${argv[1]}`;
+if (isMainModule) {
+  main();
+}
