@@ -441,7 +441,7 @@ func main() {
 		result, err := redeem(fid, currentCdk, kid)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error redeeming:", err)
-			break
+			continue
 		}
 		fmt.Println(prettyJSON(result))
 
@@ -459,13 +459,13 @@ func main() {
 		if isSuccess {
 			markRedeemed(state, fid, currentCdk)
 			saveState(statePath, state)
-			break
+			continue
 		} else {
 			// Other terminal error (e.g. CDK code error, claimed, expired) - stop retrying and cache code
 			fmt.Printf("Terminal error received: %s. Caching code to prevent retries.\n", msgVal)
 			markRedeemed(state, fid, currentCdk)
 			saveState(statePath, state)
-			break
+			continue
 		}
 	}
 	fmt.Println("\nAll done!")
