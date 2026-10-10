@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 )
@@ -245,6 +247,98 @@ func TestParseArgs(t *testing.T) {
 			}
 			if fid != tt.wantFID || kid != tt.wantKID || code != tt.wantCode || file != tt.wantFile {
 				t.Fatalf("parseArgs() = (%q, %q, %q, %q), want (%q, %q, %q, %q)", fid, kid, code, file, tt.wantFID, tt.wantKID, tt.wantCode, tt.wantFile)
+			}
+		})
+	}
+}
+
+func TestRedeemAll(t *testing.T) {
+	const fid, kid = "123456", "2402"
+	errRequest := errors.New("connection reset")
+
+	success := map[string]any{"code": float64(0), "msg": "SUCCESS"}
+	claimed := map[string]any{"code": float64(1), "msg": "RECEIVED."}
+
+	type reply struct {
+		result map[string]any
+		err    error
+	}
+
+	tests := []struct {
+		name       string
+		codes      []string
+		cached     []string
+		replies    map[string]reply
+		wantCalls  []string
+		wantCached []string
+	}{
+		{
+			name:       "continues_after_success",
+			codes:      []string{"CODE1", "CODE2", "CODE3"},
+			replies:    map[string]reply{"CODE1": {result: success}, "CODE2": {result: success}, "CODE3": {result: success}},
+			wantCalls:  []string{"CODE1", "CODE2", "CODE3"},
+			wantCached: []string{"CODE1", "CODE2", "CODE3"},
+		},
+		{
+			name:       "continues_after_terminal_error",
+			codes:      []string{"CODE1", "CODE2", "CODE3"},
+			replies:    map[string]reply{"CODE1": {result: claimed}, "CODE2": {result: success}, "CODE3": {result: claimed}},
+			wantCalls:  []string{"CODE1", "CODE2", "CODE3"},
+			wantCached: []string{"CODE1", "CODE2", "CODE3"},
+		},
+		{
+			name:       "request_error_is_skipped_and_not_cached",
+			codes:      []string{"CODE1", "CODE2", "CODE3"},
+			replies:    map[string]reply{"CODE1": {result: success}, "CODE2": {err: errRequest}, "CODE3": {result: success}},
+			wantCalls:  []string{"CODE1", "CODE2", "CODE3"},
+			wantCached: []string{"CODE1", "CODE3"},
+		},
+		{
+			name:       "all_requests_fail",
+			codes:      []string{"CODE1", "CODE2"},
+			replies:    map[string]reply{"CODE1": {err: errRequest}, "CODE2": {err: errRequest}},
+			wantCalls:  []string{"CODE1", "CODE2"},
+			wantCached: nil,
+		},
+		{
+			name:       "cached_code_is_not_requested",
+			codes:      []string{"CODE1", "CODE2"},
+			cached:     []string{"code1"},
+			replies:    map[string]reply{"CODE2": {result: success}},
+			wantCalls:  []string{"CODE2"},
+			wantCached: []string{"code1", "CODE2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "state.json")
+			state := make(StateMap)
+			if tt.cached != nil {
+				state[fid] = append([]string(nil), tt.cached...)
+			}
+
+			var calls []string
+			redeemFn := func(gotFID, cdk, gotKID string) (map[string]any, error) {
+				if gotFID != fid || gotKID != kid {
+					t.Fatalf("redeem called with (%q, %q), want (%q, %q)", gotFID, gotKID, fid, kid)
+				}
+				calls = append(calls, cdk)
+				r := tt.replies[cdk]
+				return r.result, r.err
+			}
+
+			redeemAll(tt.codes, fid, kid, state, statePath, redeemFn, 0)
+
+			if !reflect.DeepEqual(calls, tt.wantCalls) {
+				t.Fatalf("redeemed codes = %v, want %v", calls, tt.wantCalls)
+			}
+			if got := state[fid]; !reflect.DeepEqual(got, tt.wantCached) {
+				t.Fatalf("cached codes = %v, want %v", got, tt.wantCached)
+			}
+			// The state file must match what a later run would load.
+			if got := loadState(statePath)[fid]; !reflect.DeepEqual(got, tt.wantCached) {
+				t.Fatalf("persisted codes = %v, want %v", got, tt.wantCached)
 			}
 		})
 	}

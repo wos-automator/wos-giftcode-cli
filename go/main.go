@@ -347,6 +347,58 @@ func parseCodesJson(data []byte) ([]string, error) {
 	return nil, fmt.Errorf("invalid JSON format: must be array of objects, array of strings, or single object with 'code' key")
 }
 
+// redeemAll redeems every code in order and caches each terminal result in the
+// state file. A failed request is skipped without being cached, so the code is
+// retried on the next run.
+func redeemAll(codes []string, fid, kid string, state StateMap, statePath string,
+	redeemFn func(fid, cdk, kid string) (map[string]any, error), delay time.Duration) {
+	for idx, currentCdk := range codes {
+		fmt.Println("\n========================================")
+		fmt.Printf("Processing gift code: %s\n", currentCdk)
+
+		if isRedeemed(state, fid, currentCdk) {
+			fmt.Printf("Code already redeemed or marked as processed for player %s (cached). Skipping.\n", fid)
+			continue
+		}
+
+		if idx > 0 {
+			fmt.Printf("Waiting %s to avoid API rate limits...\n", delay)
+			time.Sleep(delay)
+		}
+
+		fmt.Println("Redeeming gift code...")
+		result, err := redeemFn(fid, currentCdk, kid)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error redeeming:", err)
+			continue
+		}
+		fmt.Println(prettyJSON(result))
+
+		cVal := 0.0
+		if cv, ok := result["code"].(float64); ok {
+			cVal = cv
+		} else if cv, ok := result["code"].(int); ok {
+			cVal = float64(cv)
+		}
+
+		msgVal, _ := result["msg"].(string)
+
+		isSuccess := cVal == 0
+
+		if isSuccess {
+			markRedeemed(state, fid, currentCdk)
+			saveState(statePath, state)
+			continue
+		} else {
+			// Other terminal error (e.g. CDK code error, claimed, expired) - stop retrying and cache code
+			fmt.Printf("Terminal error received: %s. Caching code to prevent retries.\n", msgVal)
+			markRedeemed(state, fid, currentCdk)
+			saveState(statePath, state)
+			continue
+		}
+	}
+}
+
 func main() {
 	cliFID, cliKID, cdk, codesFile, err := parseArgs(os.Args[1:])
 	if err != nil {
@@ -423,50 +475,6 @@ func main() {
 		state = make(StateMap)
 	}
 
-	for idx, currentCdk := range codesList {
-		fmt.Println("\n========================================")
-		fmt.Printf("Processing gift code: %s\n", currentCdk)
-
-		if isRedeemed(state, fid, currentCdk) {
-			fmt.Printf("Code already redeemed or marked as processed for player %s (cached). Skipping.\n", fid)
-			continue
-		}
-
-		if idx > 0 {
-			fmt.Println("Waiting 10 seconds to avoid API rate limits...")
-			time.Sleep(10 * time.Second)
-		}
-
-		fmt.Println("Redeeming gift code...")
-		result, err := redeem(fid, currentCdk, kid)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error redeeming:", err)
-			break
-		}
-		fmt.Println(prettyJSON(result))
-
-		cVal := 0.0
-		if cv, ok := result["code"].(float64); ok {
-			cVal = cv
-		} else if cv, ok := result["code"].(int); ok {
-			cVal = float64(cv)
-		}
-
-		msgVal, _ := result["msg"].(string)
-
-		isSuccess := cVal == 0
-
-		if isSuccess {
-			markRedeemed(state, fid, currentCdk)
-			saveState(statePath, state)
-			break
-		} else {
-			// Other terminal error (e.g. CDK code error, claimed, expired) - stop retrying and cache code
-			fmt.Printf("Terminal error received: %s. Caching code to prevent retries.\n", msgVal)
-			markRedeemed(state, fid, currentCdk)
-			saveState(statePath, state)
-			break
-		}
-	}
+	redeemAll(codesList, fid, kid, state, statePath, redeem, 10*time.Second)
 	fmt.Println("\nAll done!")
 }
