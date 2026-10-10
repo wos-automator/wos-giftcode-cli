@@ -6,7 +6,7 @@
 
 **Whiteout Survival Auto-Redeemer** collects active gift codes from several community sites and redeems them for your account. A **Node.js** scraper gathers the codes, a **Go** client redeems them, and a daily `cron` job ties the two together for a set-and-forget setup.
 
-The gift-code API no longer uses CAPTCHAs. A redemption is now a single signed request that carries your **player ID** and your **state number**. See [BACKEND_PROTOCOL.md](./BACKEND_PROTOCOL.md) for the protocol details.
+A redemption is a single signed request that carries your **player ID** and your **state number**. See [BACKEND_PROTOCOL.md](./BACKEND_PROTOCOL.md) for the protocol details.
 
 ---
 
@@ -14,7 +14,7 @@ The gift-code API no longer uses CAPTCHAs. A redemption is now a single signed r
 
 * **Multi-Source Code Scraper**: Merges active codes from **PocketGamer**, **wosrewards.com** and **whiteoutsurvival-community.com**.
 * **Expiry Filtering**: A code that any source marks as expired is dropped, even if another source still lists it as active.
-* **One Request per Code**: No CAPTCHA, no solver, no retries. Each code is redeemed with one signed call to `/gift_code`.
+* **One Request per Code**: Each code is redeemed with one signed call to `/gift_code`.
 * **State Caching & Rate Limit Protection**: Processed codes are cached per player so they are never sent twice, and the client waits 10 seconds between requests.
 * **Flexible Configuration**: Player ID and state number are resolved from CLI flags, environment variables, a local `.env` or a global `~/.wos-cli-env`.
 * **Zero Dependencies**: The Go client and the scraper use only their standard libraries.
@@ -225,12 +225,6 @@ Every request carries a `sign` form field so the API accepts it:
 4. Take the MD5 digest as a hex string and send it as the `sign` field alongside the other parameters.
 
 Requests also need browser-like `Origin`, `Referer` and `User-Agent` headers. [BACKEND_PROTOCOL.md](./BACKEND_PROTOCOL.md) has a worked example.
-
----
-
-## 🧓 Legacy Node.js Client and CAPTCHA Solver
-
-`js/wos-client.js`, `solver/` and `setup_solver.sh` implement the previous protocol (`/player`, `/captcha`, then `/gift_code` with a solved CAPTCHA). They have not been migrated: the Node.js client does not send the state number the API now requires. Use the Go client.
 
 ---
 

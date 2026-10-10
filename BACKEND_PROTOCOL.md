@@ -3,8 +3,8 @@
 Base URL: `https://wos-giftcode-api.centurygame.com/api`
 
 This document describes the protocol as the Go client (`go/main.go`) speaks it.
-Redeeming a code is a single request: the CAPTCHA step is gone, and the request
-must name the player's state (`kid`) in addition to the player ID.
+Redeeming a code is a single request that names the player ID and the
+player's state (`kid`).
 
 All requests:
 - **Method:** `POST`
@@ -74,8 +74,7 @@ This case is covered by `TestAppendSign` in `go/main_test.go`.
 
 1. `POST /gift_code` with `{fid, cdk, kid, time, sign}` -> redeems the code.
 
-There is no session to set up: the client does not call `/player` or `/captcha`
-first.
+There is no session to set up and no preceding request.
 
 ### Response format
 
@@ -96,66 +95,3 @@ is left uncached and retried on the next run.
 ### Rate limiting
 
 The Go client waits 10 seconds between two `/gift_code` requests.
-
-## Other endpoints (previous protocol)
-
-The endpoints below were documented for the previous, CAPTCHA-based protocol.
-The Go client no longer calls them and they have not been re-checked against
-the current backend. The legacy Node.js client (`js/wos-client.js`) still uses
-the first two.
-
-| Purpose | Path | Payload (before `sign`) |
-|---------|------|--------------------------|
-| Identify player | `/player` | `{ fid, time }` |
-| Fetch captcha | `/captcha` | `{ fid, time, init }` |
-| Gift-code config | `/gift_code_config` | `{ fid, time }` |
-
-- `time` = `Date.now()` (13-digit milliseconds) in the previous protocol
-- `init` = captcha init flag (0/1)
-
-Previous flow:
-1. `POST /player` with `{fid, time}` -> returned player data
-   (`nickname`, `kid`, `stove_lv`, `avatar_image`, ...) and confirmed the ID.
-2. `POST /captcha` with `{fid, time, init}` -> returned a Base64 captcha image in
-   `data.img` that had to be solved.
-3. `POST /gift_code` with `{fid, cdk, captcha_code, time}` -> redeemed the code.
-
-### Use of `/gift_code_config`
-Gift-code config (`/gift_code_config`) returns the banners of the original wos code redemption page, which can be used to display the same banners in a custom client. The banners are organized by language code, and each language has a `mob_banner` and `pc_banner` URL.
-
-#### shortened sample response:
-```json
-{
-  "code": 0,
-  "data": {
-    "arab": {
-      "mob_banner": "https://gom-s3-user-avatar.s3.us-west-2.amazonaws.com/attachment_prod/images/gift_code_banner/2026-04/6eb58e46efa4b460b3d6ce6189a69b15.png",
-      "pc_banner": "https://gom-s3-user-avatar.s3.us-west-2.amazonaws.com/attachment_prod/images/gift_code_banner/2026-04/6eb58e46efa4b460b3d6ce6189a69b15.png"
-    },
-    "de": { ... },
-    "el": { ... },
-    "en": { ... },
-    "es": { ... },
-    "fr": { ... },
-    "id": { ... },
-    "it": { ... },
-    "ja": { ... },
-    "ko": { ... },
-    "nl": { ... },
-    "no": { ... },
-    "pl": { ... },
-    "pt": { ... },
-    "ru": { ... },
-    "sv": { ... },
-    "th": { ... },
-    "tl": { ... },
-    "tr": { ... },
-    "vi": { ... },
-    "zh_cn": { ... },
-    "zh_tw": { ... }
-  },
-  "err_code": 0,
-  "msg": "SUCCESS"
-}
-
-```
