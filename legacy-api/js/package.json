@@ -1,0 +1,12 @@
+{
+  "name": "wos-giftcode-cli-js-legacy",
+  "version": "1.0.0",
+  "description": "Legacy WOS Gift-Code Redemption Client in JavaScript (CAPTCHA-based API, no longer served)",
+  "main": "wos-client.js",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "GPL-3.0-only"
+}

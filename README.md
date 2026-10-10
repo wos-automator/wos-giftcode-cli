@@ -4,101 +4,182 @@
 
 > **Never miss a Whiteout Survival reward again.** Sit back, relax, and let your free in-game gifts flow directly to your account daily.
 
-**Whiteout Survival Auto-Redeemer** is a high-performance, zero-dependency automation suite written in **Go** and **Node.js** that manages the entire gift-code lifecycle. By uniting multi-source web scraping, machine-learning CAPTCHA solving, smart player-ID resolution, state caching, and daily `cron` scheduling, it provides a flawless, set-and-forget experience for players.
+**Whiteout Survival Auto-Redeemer** collects active gift codes from several community sites and redeems them for your account. A **Node.js** scraper gathers the codes, a **Go** client redeems them, and a daily `cron` job ties the two together for a set-and-forget setup.
+
+A redemption is a single signed request that carries your **player ID** and your **state number**. See [BACKEND_PROTOCOL.md](./BACKEND_PROTOCOL.md) for the protocol details.
 
 ---
 
 ## 🔥 Key Features
 
-* **Dual-Source Code Scraper**: Aggregates, cleans, and merges active codes from both **PocketGamer** and **WOSRewards.com** dynamically.
-* **Smart Expiry Filtering**: Uses real-time status tracking on `wosrewards.com` to weed out expired codes before they hit your API queue.
-* **Offline ML CAPTCHA Solver**: Integrates an offline machine-learning OCR solver (`ddddocr` + OpenCV bilateral filtering) achieving **>93% success rates** in 2 attempts, completely avoiding commercial captcha API costs.
-* **State Caching & Rate Limit Protection**: Prevents redundant network calls by caching successfully redeemed codes on a per-player basis, observing a safe 10-second backoff between calls to comply with API rate limits.
-* **Flexible Player ID Precedence**: Resolves Player IDs (`fid`) elegantly: CLI flag `-u` > env variable `DEFAULT_FID` > local `.env` > global `~/.wos-cli-env` > default fallback.
-* **Zero Dependencies**: Core clients are built strictly on standard libraries (no external runtimes needed for Node/Go, keeping them lightweight and ultra-secure).
+* **Multi-Source Code Scraper**: Merges active codes from **PocketGamer**, **wosrewards.com** and **whiteoutsurvival-community.com**.
+* **Expiry Filtering**: A code that any source marks as expired is dropped, even if another source still lists it as active.
+* **One Request per Code**: Each code is redeemed with one signed call to `/gift_code`.
+* **State Caching & Rate Limit Protection**: Processed codes are cached per player so they are never sent twice, and the client waits 10 seconds between requests.
+* **Flexible Configuration**: Player ID and state number are resolved from CLI flags, environment variables, a local `.env` or a global `~/.wos-cli-env`.
+* **Zero Dependencies**: The Go client and the scraper use only their standard libraries.
 
 ---
 
 ## 📋 Requirements
 
-* **Node.js >= 18** (for the Node client and JS scraper)
-* **Go >= 1.21** (for compiling the Go binary client)
-* **Python 3.8+** (for the offline CAPTCHA solver; optional, falls back to manual entry)
-* An OS with a default browser or image viewer (macOS `open`, Windows `start`, Linux `xdg-open` for manual fallbacks)
+* **Go >= 1.21** to build the client
+* **Node.js >= 18** to run the code scraper
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Setup the CAPTCHA Solver (Optional)
-Run the script to initialize a local Python virtual environment and download the solver model:
-```bash
-./setup_solver.sh
-```
+### 1. Find your player ID and state number
 
-### 2. Node.js Client
-Run the client with a specific Player ID and code:
-```bash
-node js/wos-client.js -u 123456789 HAPPY2026
-```
-Or process a JSON file containing multiple codes:
-```bash
-node js/wos-client.js -u 123456789 -f codes.json
-```
+Both are shown in your in-game profile: the player ID below your name, and the state as `#1234` next to it. The API calls them `fid` and `kid`.
 
-### 3. Go Client
-Run the Go client directly:
+### 2. Build the client
+
 ```bash
-go run ./go -u 123456789 HAPPY2026
-```
-Build a precompiled binary for maximum performance:
-```bash
-# Build binary for current platform (outputs to dist/)
+# Build a binary for the current platform (outputs to dist/)
 ./go/build.sh
-# Build binaries for macOS/Linux/Windows
+# Build binaries for macOS, Linux and Windows
 ./go/build.sh all
+```
+
+Binaries are named `dist/wos-client-<os>-<arch>`, for example `dist/wos-client-darwin-arm64`.
+
+### 3. Redeem a code
+
+```bash
+dist/wos-client-darwin-arm64 -u 123456789 -k 1234 HAPPY2026
+```
+
+Or without building first:
+
+```bash
+cd go && go run . -u 123456789 -k 1234 HAPPY2026
+```
+
+### 4. Redeem all currently active codes
+
+```bash
+node js/code-scraper.js | dist/wos-client-darwin-arm64 -u 123456789 -k 1234
+```
+
+---
+
+## ⚙️ Client Usage
+
+```text
+wos-client [-u playerid] [-k state] <code>
+wos-client [-u playerid] [-k state] -f <codes.json>
+```
+
+| Flag | Meaning |
+|------|---------|
+| `-u` | Player ID (`fid`) |
+| `-k` | State number (`kid`) |
+| `-f` | JSON file with codes to redeem; `-` reads from stdin |
+
+When no code and no `-f` is given, the client reads the code list from stdin if input is piped, and otherwise prompts for a single code.
+
+### Code list format
+
+`-f` and stdin accept any of these JSON shapes:
+
+```json
+[{ "code": "HAPPY2026" }, { "code": "WOS1234" }]
+```
+```json
+["HAPPY2026", "WOS1234"]
+```
+```json
+{ "code": "HAPPY2026" }
+```
+
+The scraper emits the first shape, so its output can be piped straight into the client.
+
+### Player ID and state number
+
+Each value is resolved separately, highest priority first:
+
+1. CLI flag: `-u`, `-k`
+2. Environment variable: `DEFAULT_FID`, `DEFAULT_KID`
+3. `.env` in the current working directory (see [example.env](./example.env))
+4. `~/.wos-cli-env`
+5. Built-in placeholder (`123456789` / `1234`)
+
+Config files use `KEY=value` lines; `export` prefixes and quotes are accepted:
+
+```bash
+DEFAULT_FID=123456789
+DEFAULT_KID=1234
+```
+
+> **Set both keys in `~/.wos-cli-env`.** When that file exists, both values are taken from it, so a missing key leaves that value empty rather than falling back to the placeholder.
+
+### Redeemed-code cache
+
+The client records every processed code in `~/.wos-redeemed-codes.json`, grouped by player ID. Cached codes are skipped on later runs without contacting the API. Matching is case-insensitive.
+
+A code is cached when the API answers, whether it was redeemed or rejected (already claimed, expired, invalid), because asking again would not change the answer. A request that fails before the API answers is not cached, so the code is retried on the next run.
+
+To redeem a code again, remove it from the cache file.
+
+---
+
+## 🕸️ Code Scraper
+
+```bash
+node js/code-scraper.js              # print the JSON code list to stdout
+node js/code-scraper.js -o codes.json # write it to a file
+```
+
+Sources:
+
+* `https://www.pocketgamer.com/whiteout-survival/codes/`
+* `https://wosrewards.com`
+* `https://www.whiteoutsurvival-community.com/en/gift-codes.html`
+
+A source that cannot be reached only produces a warning; the remaining sources are still used. The scraper exits with an error when no active code is found at all.
+
+Run the scraper tests with:
+
+```bash
+cd js && npm test
 ```
 
 ---
 
 ## 🛠️ Automated Cron Redemption Pipeline (Zero-Touch)
 
-You can configure the client to run entirely in the background once a day using `cron`. The automated pipeline fetches the latest active codes, filters out expired ones, and submits them to the redemption engine.
+The pipeline fetches the current codes once a day and redeems the ones your account has not processed yet. [util/INSTALL_CRON.md](./util/INSTALL_CRON.md) has the same steps in more detail.
 
-### Pipeline Layout Directory Structure
+### Directory layout
 
 ```text
-$HOME/                       # Your user home directory (/Users/username)
-├── .wos-cli-env             # Global config file (defines your DEFAULT_FID)
-├── .wos-redeemed-codes.json # History cache (tracks successfully redeemed codes)
-└── work/                    # Parent workspace directory
-    ├── cron-wos-codes.sh    # Executable runner script (Step 1 below)
-    └── wos-giftcode-cli/    # Checked-out repository folder
+$HOME/
+├── .wos-cli-env             # Global config (DEFAULT_FID and DEFAULT_KID)
+├── .wos-redeemed-codes.json # Cache of processed codes
+└── work/
+    ├── cron-wos-codes.sh    # Runner script (copied in step 1)
+    └── wos-giftcode-cli/    # This repository
         ├── dist/
-        │   └── wos-client-darwin-arm64  # Precompiled Go client binary
+        │   └── wos-client-darwin-arm64  # Go client binary
         └── js/
-            └── code-scraper.js          # The scraper script
+            └── code-scraper.js          # The scraper
 ```
 
-### Setup Steps
+### Setup steps
 
-1. **Copy the Runner Script**:
-   Copy the script from the repository's `util/` directory up into your `$HOME/work/` parent directory:
+1. **Copy the runner script** next to the repository:
    ```bash
    cp util/cron-wos-codes.sh $HOME/work/cron-wos-codes.sh
    chmod +x $HOME/work/cron-wos-codes.sh
    ```
-2. **Configure your Player ID**:
-   Create your global config containing your player ID (replace `YOUR_PLAYER_ID` with your actual in-game ID):
+   The script calls `dist/wos-client-darwin-arm64`. Change the binary name in it if you run on another platform.
+2. **Configure your player ID and state number**:
    ```bash
-   echo "DEFAULT_FID=YOUR_PLAYER_ID" > ~/.wos-cli-env
+   printf 'DEFAULT_FID=YOUR_PLAYER_ID\nDEFAULT_KID=YOUR_STATE\n' > ~/.wos-cli-env
    ```
-3. **Schedule with Crontab**:
-   Open your cron table:
-   ```bash
-   crontab -e
-   ```
-   Add the following line to run the automated redemption pipeline every day at midnight, logging output to `/tmp/wos-cron.log`:
+3. **Schedule with crontab** (`crontab -e`). This runs the pipeline every day at midnight and logs to `/tmp/wos-cron.log`:
    ```text
    0 0 * * * $HOME/work/cron-wos-codes.sh > /tmp/wos-cron.log 2>&1
    ```
@@ -107,52 +188,50 @@ $HOME/                       # Your user home directory (/Users/username)
 
 ## 🔍 Technical Flow
 
-Here is the lifecycle of a fully automated run:
-
 ```mermaid
 graph TD
-    A[Cron Job Triggered] --> B[Scraper Runs: js/code-scraper.js]
-    B --> C[Scrape PocketGamer & wosrewards.com]
-    C --> D[Filter Out Expired Codes]
-    D --> E[Output JSON Codes Stream]
-    E --> F[Go/JS Client Receives Pipe]
-    F --> G[Read History Cache ~/.wos-redeemed-codes.json]
-    G --> H{Code Already Redeemed?}
-    H -- Yes --> I[Skip Code]
-    H -- No --> J[Call API /player: Validate Player ID]
-    J --> K[Call API /captcha: Get Base64 Captcha Image]
-    K --> L[Run Local Python solver.py]
-    L --> M{Auto-Solve Succeeded?}
-    M -- Yes --> N[Submit Redemption API /gift_code]
-    M -- No --> O[Fallback to Interactive Prompt/Browser]
-    N --> P{API Success?}
-    P -- Yes --> Q[Mark Redeemed & Save to Cache]
-    P -- No [Captcha Incorrect] --> R[Retry Fetch Captcha up to 4x]
-    P -- No [Code Expired/Invalid] --> S[Mark Redeemed to Prevent Re-evaluation]
+    A[Cron job triggered] --> B[Scraper runs: js/code-scraper.js]
+    B --> C[Scrape PocketGamer, wosrewards.com, whiteoutsurvival-community.com]
+    C --> D[Drop codes marked as expired]
+    D --> E[Emit JSON code list]
+    E --> F[Go client reads the list from stdin]
+    F --> G[Load cache ~/.wos-redeemed-codes.json]
+    G --> H{Code in cache?}
+    H -- Yes --> I[Skip code]
+    H -- No --> J[Wait 10 s, except before the first request]
+    J --> K[POST /gift_code with fid, cdk, kid, time, sign]
+    K --> L{Did the API answer?}
+    L -- No --> M[Report error, leave code uncached]
+    L -- Yes --> N[Add code to cache and save]
+    I --> O[Next code]
+    M --> O
+    N --> O
 ```
 
-1. **Scraping**: `code-scraper.js` fetches working codes from PocketGamer and `wosrewards.com`. It reads the status badges on `wosrewards.com` and filters out any codes that are expired.
-2. **Resolution & Load**: The client loads the configuration settings and checks the local history cache (`.wos-redeemed-codes.json`).
-3. **Verification**: For each candidate code, the client calls `/player` to verify that the player ID exists and prints player profile data.
-4. **CAPTCHA Auto-Solving**: The client requests a CAPTCHA via `/captcha`, cleans the image using an OpenCV bilateral filter (to smooth background grid lines and noise circles), and passes the bytes to `ddddocr` in Python. 
-5. **Redemption**: If solved, the code is redeemed via `/gift_code`. On success (or if the code is invalid/expired), the code is marked as processed in the history cache to avoid hammering the API on subsequent daily runs.
+1. **Scraping**: `code-scraper.js` collects codes from all sources and removes any code a source marks as expired.
+2. **Configuration**: The client resolves player ID and state number and loads the cache.
+3. **Redemption**: Each uncached code is sent to `/gift_code` in one signed request, with a 10-second pause between requests.
+4. **Caching**: Every code the API answered for is cached; failed requests are retried on the next run.
 
 ---
 
-## 🔒 Signature Security (`appendSign`)
+## 🔒 Request Signature (`appendSign`)
 
-All requests are signed using MD5 hashing to match the game's Web Application Firewall (WAF) requirements:
-1. Sort query parameters alphabetically by key.
-2. URL-encode parameter values (matching Javascript's `encodeURIComponent` byte-for-byte).
-3. Append a fixed developer salt: `tB87#kPtkxqOS2`.
-4. Generate the MD5 digest and include it in the headers alongside standard browser `Origin` and `Referer` settings.
+Every request carries a `sign` form field so the API accepts it:
+
+1. Sort the parameters alphabetically by key.
+2. URL-encode each value exactly like JavaScript's `encodeURIComponent` and join the pairs as `key=value&key=value`.
+3. Append the fixed salt `tB87#kPtkxqOS2`.
+4. Take the MD5 digest as a hex string and send it as the `sign` field alongside the other parameters.
+
+Requests also need browser-like `Origin`, `Referer` and `User-Agent` headers. [BACKEND_PROTOCOL.md](./BACKEND_PROTOCOL.md) has a worked example.
 
 ---
 
 ## 📦 CI/CD (GitHub Actions)
 
-* **Build Workflow (`build.yml`)**: Verifies code health with `go vet`, compiles targets for macOS, Linux, and Windows (AMD64 & ARM64) using `go/build.sh all`, and uploads them as build artifacts.
-* **Release Workflow (`release.yml`)**: Triggers on signed tag pushes (`v*`). Verifies tag signature authenticity via SSH allowed signers, builds release targets, generates changelogs automatically from commit logs, and creates a formal GitHub release.
+* **Build workflow (`build.yml`)**: Runs `go vet`, then builds the client for macOS, Linux (AMD64 and ARM64) and Windows (AMD64) with `go/build.sh` and uploads one artifact per platform.
+* **Release workflow (`release.yml`)**: Runs on `v*` tag pushes. It verifies the tag's SSH signature against the allowed signers, builds the release binaries, generates a changelog from the commit log and creates a GitHub release.
 
 ---
 

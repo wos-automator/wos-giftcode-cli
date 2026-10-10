@@ -107,9 +107,6 @@ jobs:
             fi
           done
 
-          # JavaScript version as a standalone attachment.
-          cp js/wos-client.js "release-assets/wos-client-${TAG}.js"
-
           ls -l release-assets/
 
       - name: Create GitHub release

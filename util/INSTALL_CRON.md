@@ -8,7 +8,7 @@ The configuration expects the repository to be checked out at `$HOME/work/wos-gi
 
 ```text
 $HOME/                      # Your user home directory 
-├── .wos-cli-env            # Global config file (defines DEFAULT_FID)
+├── .wos-cli-env            # Global config file (DEFAULT_FID, DEFAULT_KID)
 ├── .wos-redeemed-codes.json# Cache tracking successfully redeemed codes
 └── work/                   # Parent work directory
     ├── cron-wos-codes.sh   # The executed runner script (copied in Step 1)
@@ -35,12 +35,12 @@ Give the script execution permissions:
 chmod +x $HOME/work/cron-wos-codes.sh
 ```
 
-### Step 3: Configure Your Player ID
-Since cron runs completely non-interactively, your player ID must be configured in your global home environment config:
+### Step 3: Configure Your Player ID and State
+Since cron runs completely non-interactively, your player ID and state number must be configured in your global home environment config:
 ```bash
-echo "DEFAULT_FID=YOUR_PLAYER_ID" > ~/.wos-cli-env
+printf 'DEFAULT_FID=YOUR_PLAYER_ID\nDEFAULT_KID=YOUR_STATE\n' > ~/.wos-cli-env
 ```
-*(Replace `YOUR_PLAYER_ID` with your actual Whiteout Survival player ID)*
+*(Replace `YOUR_PLAYER_ID` and `YOUR_STATE` with your actual Whiteout Survival player ID and state number. Both keys are required.)*
 
 ### Step 4: Schedule with Crontab
 Open your crontab configuration editor:

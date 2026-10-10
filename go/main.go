@@ -15,9 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,22 +114,6 @@ func redeem(fid, cdk, kid string) (map[string]any, error) {
 	return api("/gift_code", map[string]string{
 		"fid": fid, "cdk": cdk, "kid": kid, "time": now(),
 	})
-}
-
-// openInBrowser opens a file with the OS default application.
-func openInBrowser(path string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", path)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", path)
-	default:
-		cmd = exec.Command("xdg-open", path)
-	}
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "Could not open file automatically:", err)
-	}
 }
 
 // prompt reads a trimmed line from stdin.
