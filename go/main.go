@@ -1,22 +1,22 @@
 // WOS Gift-Code Redemption Client (reverse engineered) - Go implementation
-// Usage: go run . [-u userid] <code>
-//        go run . [-u userid] -f <codes.json>
+// Usage: go run . [-u userid] [-k stateid] <code>
+//
+//	go run . [-u userid] [-k stateid] -f <codes.json>
 package main
 
 import (
 	"bufio"
 	"crypto/md5"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -27,12 +27,11 @@ import (
 const (
 	salt       = "tB87#kPtkxqOS2"
 	baseURL    = "https://wos-giftcode-api.centurygame.com/api"
-	defaultFID = "123456789"
+	defaultFID = "123456789" // the playerid
+	defaultKID = "1234"      // the state
 	userAgent  = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
-
-var dataURIRe = regexp.MustCompile(`^data:image/(\w+);base64,`)
 
 // version is injected at build time via -ldflags "-X main.version=...".
 var version = "dev"
@@ -84,6 +83,7 @@ func api(path string, data map[string]string) (map[string]any, error) {
 		form.Set(k, v)
 	}
 
+	log.Printf("api request: %s %s", path, form.Encode())
 	req, err := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -110,20 +110,11 @@ func api(path string, data map[string]string) (map[string]any, error) {
 	return out, nil
 }
 
-func now() string { return strconv.FormatInt(time.Now().UnixMilli(), 10) }
+func now() string { return strconv.FormatInt(time.Now().Unix(), 10) }
 
-// --- Endpoints ---
-func getPlayer(fid string) (map[string]any, error) {
-	return api("/player", map[string]string{"fid": fid, "time": now()})
-}
-
-func getCaptcha(fid string) (map[string]any, error) {
-	return api("/captcha", map[string]string{"fid": fid, "time": now(), "init": "0"})
-}
-
-func redeem(fid, cdk, captchaCode string) (map[string]any, error) {
+func redeem(fid, cdk, kid string) (map[string]any, error) {
 	return api("/gift_code", map[string]string{
-		"fid": fid, "cdk": cdk, "captcha_code": captchaCode, "time": now(),
+		"fid": fid, "cdk": cdk, "kid": kid, "time": now(),
 	})
 }
 
@@ -159,15 +150,16 @@ func prettyJSON(v map[string]any) string {
 	return string(b)
 }
 
-// defaultFIDFromDotEnv reads DEFAULT_FID from a local .env file.
-func defaultFIDFromDotEnv(path string) (string, error) {
+// defaultsFromDotEnv reads
+// DEFAULT_FID, DEFAULT_KID from a local .env file.
+func defaultsFromDotEnv(path string) (string, string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
+		return "", "", err
 	}
+
+	fid := ""
+	kid := ""
 
 	for _, rawLine := range strings.Split(string(b), "\n") {
 		line := strings.TrimSpace(rawLine)
@@ -179,85 +171,98 @@ func defaultFIDFromDotEnv(path string) (string, error) {
 		}
 
 		k, v, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(k) != "DEFAULT_FID" {
+		if !ok || !strings.HasPrefix(strings.TrimSpace(k), "DEFAULT_") {
 			continue
 		}
 
-		v = strings.TrimSpace(v)
-		if len(v) >= 2 {
-			if (v[0] == '\'' && v[len(v)-1] == '\'') || (v[0] == '"' && v[len(v)-1] == '"') {
-				v = v[1 : len(v)-1]
-			}
+		if strings.TrimSpace(k) == "DEFAULT_FID" {
+			fid = strings.Trim(v, `'" \t`)
 		}
-		return strings.TrimSpace(v), nil
-	}
+		if strings.TrimSpace(k) == "DEFAULT_KID" {
+			kid = strings.Trim(v, `'" \t`)
+		}
 
-	return "", nil
+	}
+	return fid, kid, nil
 }
 
 // resolveFID applies precedence: CLI arg > env var > .env > built-in default.
-func resolveFID(cliFID string, getenv func(string) string, dotEnvPath string) (string, error) {
+func resolveIDs(cliFID string, cliKID string, getenv func(string) string, dotEnvPath string) (string, string, error) {
 	fid := defaultFID
+	kid := defaultKID
 	var readErr error
 
 	// 1. Check global ~/.wos-cli-env config (lowest priority config)
 	if home, err := os.UserHomeDir(); err == nil {
 		globalPath := filepath.Join(home, ".wos-cli-env")
-		if globalFID, err := defaultFIDFromDotEnv(globalPath); err == nil && globalFID != "" {
+		if globalFID, globalKID, err := defaultsFromDotEnv(globalPath); err == nil {
 			fid = globalFID
+			kid = globalKID
 		}
 	}
 
 	// 2. Check local .env (higher priority than global)
-	dotEnvFID, err := defaultFIDFromDotEnv(dotEnvPath)
+	dotEnvFID, dotEnvKID, err := defaultsFromDotEnv(dotEnvPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			readErr = err
 		}
-	} else if dotEnvFID != "" {
-		fid = dotEnvFID
+	} else {
+		if dotEnvFID != "" {
+			fid = dotEnvFID
+		}
+		if dotEnvKID != "" {
+			kid = dotEnvKID
+		}
 	}
 
 	// 3. Check environment variable (higher priority than local .env)
 	if envFID := strings.TrimSpace(getenv("DEFAULT_FID")); envFID != "" {
 		fid = envFID
 	}
+	if envKID := strings.TrimSpace(getenv("DEFAULT_KID")); envKID != "" {
+		kid = envKID
+	}
 
 	// 4. Check CLI flag (highest priority)
 	if cliFID = strings.TrimSpace(cliFID); cliFID != "" {
 		fid = cliFID
 	}
+	if cliKID = strings.TrimSpace(cliKID); cliKID != "" {
+		kid = cliKID
+	}
 
-	return fid, readErr
+	return fid, kid, readErr
 }
 
 // parseArgs parses the flags -u and -f, and returns positional args if any.
-func parseArgs(args []string) (string, string, string, error) {
+func parseArgs(args []string) (string, string, string, string, error) {
 	fs := flag.NewFlagSet("wos-giftcode-cli", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	userID := fs.String("u", "", "user id")
+	stateID := fs.String("k", "", "state id")
 	codesFile := fs.String("f", "", "path to JSON codes file (use '-' for stdin)")
 
 	if err := fs.Parse(args); err != nil {
-		return "", "", "", fmt.Errorf("usage:\n  wos-giftcode-cli [-u userid] <code>\n  wos-giftcode-cli [-u userid] -f <codes.json>")
+		return "", "", "", "", fmt.Errorf("usage:\n  wos-giftcode-cli [-u userid] [-k state] <code>\n  wos-giftcode-cli [-u userid] -f <codes.json>")
 	}
 
 	rest := fs.Args()
 	if *codesFile != "" {
 		if len(rest) > 0 {
-			return "", "", "", fmt.Errorf("cannot specify both -f and a direct giftcode")
+			return "", "", "", "", fmt.Errorf("cannot specify both -f and a direct giftcode")
 		}
-		return strings.TrimSpace(*userID), "", *codesFile, nil
+		return strings.TrimSpace(*userID), strings.TrimSpace(*stateID), "", *codesFile, nil
 	}
 
 	code := ""
 	if len(rest) == 1 {
 		code = strings.TrimSpace(rest[0])
 	} else if len(rest) > 1 {
-		return "", "", "", fmt.Errorf("too many arguments\nusage:\n  wos-giftcode-cli [-u userid] <code>\n  wos-giftcode-cli [-u userid] -f <codes.json>")
+		return "", "", "", "", fmt.Errorf("too many arguments\nusage:\n  wos-giftcode-cli [-u userid] [-k stateid] <code>\n  wos-giftcode-cli [-u userid] [-k stateid] -f <codes.json>")
 	}
 
-	return strings.TrimSpace(*userID), code, "", nil
+	return strings.TrimSpace(*userID), strings.TrimSpace(*stateID), code, "", nil
 }
 
 // --- State Cache Management ---
@@ -314,7 +319,7 @@ func parseCodesJson(data []byte) ([]string, error) {
 	type CodeObj struct {
 		Code string `json:"code"`
 	}
-	
+
 	// Array of objects
 	var items []CodeObj
 	if err := json.Unmarshal(data, &items); err == nil && len(items) > 0 && items[0].Code != "" {
@@ -343,7 +348,7 @@ func parseCodesJson(data []byte) ([]string, error) {
 }
 
 func main() {
-	cliFID, cdk, codesFile, err := parseArgs(os.Args[1:])
+	cliFID, cliKID, cdk, codesFile, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -360,7 +365,7 @@ func main() {
 		codesFile = "-"
 	}
 
-	fid, err := resolveFID(cliFID, os.Getenv, ".env")
+	fid, kid, err := resolveIDs(cliFID, cliKID, os.Getenv, ".env")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Warning: could not read .env:", err)
 	}
@@ -432,228 +437,35 @@ func main() {
 			time.Sleep(10 * time.Second)
 		}
 
-		fmt.Printf("1) Identify player %s...\n", fid)
-		player, err := getPlayer(fid)
+		fmt.Println("Redeeming gift code...")
+		result, err := redeem(fid, currentCdk, kid)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error identifying player: %v. Skipping code.\n", err)
-			continue
+			fmt.Fprintln(os.Stderr, "Error redeeming:", err)
+			break
 		}
-		fmt.Println(prettyJSON(player))
+		fmt.Println(prettyJSON(result))
 
-		codeVal := 0.0
-		if cv, ok := player["code"].(float64); ok {
-			codeVal = cv
-		} else if cv, ok := player["code"].(int); ok {
-			codeVal = float64(cv)
-		}
-		if codeVal != 0 {
-			fmt.Printf("Failed to identify player %s. Skipping code.\n", fid)
-			continue
+		cVal := 0.0
+		if cv, ok := result["code"].(float64); ok {
+			cVal = cv
+		} else if cv, ok := result["code"].(int); ok {
+			cVal = float64(cv)
 		}
 
-		captchaCode := ""
-		attempts := 0
-		maxAttempts := 4
-		delay := 15 * time.Second
+		msgVal, _ := result["msg"].(string)
 
-		for attempts < maxAttempts {
-			attempts++
-			fmt.Printf("\n2) Fetching captcha (attempt %d/%d)...\n", attempts, maxAttempts)
-			cap, err := getCaptcha(fid)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Error fetching captcha:", err)
-				break
-			}
+		isSuccess := cVal == 0
 
-			capData, _ := cap["data"].(map[string]any)
-			raw, _ := capData["img"].(string)
-			if raw == "" {
-				msg, _ := cap["msg"].(string)
-				msgLower := strings.ToLower(msg)
-				if strings.Contains(msgLower, "frequent") {
-					if attempts < maxAttempts {
-						fmt.Printf("CAPTCHA fetch frequent limit hit. Waiting 15 seconds before trying again (attempt %d/%d)...\n", attempts+1, maxAttempts)
-						time.Sleep(delay)
-						_, _ = getPlayer(fid)
-						continue
-					}
-				}
-				fmt.Fprintln(os.Stderr, "No captcha image in response:", prettyJSON(cap))
-				break
-			}
-
-			ext := "png"
-			if m := dataURIRe.FindStringSubmatch(raw); m != nil {
-				ext = m[1]
-			}
-			b64 := dataURIRe.ReplaceAllString(raw, "")
-			imgData, err := base64.StdEncoding.DecodeString(b64)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to decode captcha image:", err)
-				break
-			}
-
-			imgPath := filepath.Join(os.TempDir(), "wos-captcha."+ext)
-			if err := os.WriteFile(imgPath, imgData, 0o644); err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to write captcha image:", err)
-				break
-			}
-
-			// Try to automatically solve the captcha
-			solvedCode := ""
-			solverPath := ""
-			candidates := []string{
-				"./solver/solver.py",
-				"../solver/solver.py",
-				"./go/../solver/solver.py",
-			}
-			for _, c := range candidates {
-				if _, err := os.Stat(c); err == nil {
-					solverPath = c
-					break
-				}
-			}
-
-			solverBroken := false
-			if solverPath != "" {
-				pythonCmd := "python3"
-				if runtime.GOOS == "windows" {
-					pythonCmd = "python"
-				}
-				
-				dir := filepath.Dir(solverPath)
-				venvPython := filepath.Join(dir, "venv", "bin", "python")
-				if runtime.GOOS == "windows" {
-					venvPython = filepath.Join(dir, "venv", "Scripts", "python.exe")
-				}
-				if _, err := os.Stat(venvPython); err == nil {
-					pythonCmd = venvPython
-				}
-
-				cmd := exec.Command(pythonCmd, solverPath, imgPath)
-				output, err := cmd.Output()
-				if err != nil {
-					fmt.Fprintln(os.Stderr, "Solver execution failed:", err)
-					solverBroken = true
-				} else {
-					solved := strings.TrimSpace(string(output))
-					if strings.Contains(solved, "ERROR") {
-						fmt.Fprintln(os.Stderr, "Solver returned error:", solved)
-						solverBroken = true
-					} else if len(solved) == 4 {
-						solvedCode = solved
-					} else {
-						fmt.Printf("Solver returned invalid guess length (%d): %s\n", len(solved), solved)
-					}
-				}
-			} else {
-				fmt.Fprintln(os.Stderr, "Solver script not found.")
-				solverBroken = true
-			}
-
-			if solvedCode == "" {
-				if solverBroken {
-					fmt.Println("Automatic solver is unavailable or broken.")
-					if !interactive {
-						fmt.Println("Running in non-interactive mode. Skipping this code.")
-						break
-					}
-					openInBrowser(imgPath)
-					captchaCode = prompt(reader, "\n4) Enter the captcha code shown: ")
-				} else {
-					if attempts < maxAttempts {
-						fmt.Printf("Bypassing invalid solver guess. Retrying with a new captcha (attempt %d/%d)...\n", attempts+1, maxAttempts)
-						time.Sleep(2 * time.Second)
-						continue
-					} else {
-						fmt.Println("Auto-solve failed 4 times (invalid guesses).")
-						if !interactive {
-							fmt.Println("Running in non-interactive mode. Skipping this code.")
-							break
-						}
-						openInBrowser(imgPath)
-						captchaCode = prompt(reader, "\n4) Enter the captcha code shown: ")
-					}
-				}
-			} else {
-				fmt.Printf("Automatically solved CAPTCHA: %s\n", solvedCode)
-				captchaCode = solvedCode
-			}
-
-			fmt.Println("Redeeming gift code...")
-			result, err := redeem(fid, currentCdk, captchaCode)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Error redeeming:", err)
-				break
-			}
-			fmt.Println(prettyJSON(result))
-
-			cVal := 0.0
-			if cv, ok := result["code"].(float64); ok {
-				cVal = cv
-			} else if cv, ok := result["code"].(int); ok {
-				cVal = float64(cv)
-			}
-
-			msgVal, _ := result["msg"].(string)
-
-
-			isSuccess := (cVal == 0)
-			msgLower := strings.ToLower(msgVal)
-			isCaptchaError := strings.Contains(msgLower, "captcha")
-
-			if isSuccess {
-				markRedeemed(state, fid, currentCdk)
-				saveState(statePath, state)
-				break
-			}
-
-			if isCaptchaError {
-				if attempts < maxAttempts {
-					fmt.Printf("CAPTCHA incorrect. Waiting 15 seconds before trying again (attempt %d/%d)...\n", attempts+1, maxAttempts)
-					time.Sleep(delay)
-					_, _ = getPlayer(fid)
-				} else {
-					fmt.Println("\nAuto-solve failed 4 times.")
-					if !interactive {
-						fmt.Println("Running in non-interactive mode. Skipping this code.")
-						break
-					}
-					openInBrowser(imgPath)
-					captchaCode = prompt(reader, "\n4) Enter the captcha code shown: ")
-					fmt.Println("\nRedeeming gift code...")
-					finalRes, err := redeem(fid, currentCdk, captchaCode)
-					if err != nil {
-						fmt.Fprintln(os.Stderr, "Error:", err)
-						break
-					}
-					fmt.Println(prettyJSON(finalRes))
-
-					fcVal := 0.0
-					if fcv, ok := finalRes["code"].(float64); ok {
-						fcVal = fcv
-					} else if fcv, ok := finalRes["code"].(int); ok {
-						fcVal = float64(fcv)
-					}
-					fMsgVal, _ := finalRes["msg"].(string)
-
-
-					fMsgLower := strings.ToLower(fMsgVal)
-					fIsCaptchaError := strings.Contains(fMsgLower, "captcha")
-
-					if fcVal == 0 || !fIsCaptchaError {
-						markRedeemed(state, fid, currentCdk)
-						saveState(statePath, state)
-					}
-					break
-				}
-			} else {
-				// Other terminal error (e.g. CDK code error, claimed, expired) - stop retrying and cache code
-				fmt.Printf("Terminal error received: %s. Caching code to prevent retries.\n", msgVal)
-				markRedeemed(state, fid, currentCdk)
-				saveState(statePath, state)
-				break
-			}
+		if isSuccess {
+			markRedeemed(state, fid, currentCdk)
+			saveState(statePath, state)
+			break
+		} else {
+			// Other terminal error (e.g. CDK code error, claimed, expired) - stop retrying and cache code
+			fmt.Printf("Terminal error received: %s. Caching code to prevent retries.\n", msgVal)
+			markRedeemed(state, fid, currentCdk)
+			saveState(statePath, state)
+			break
 		}
 	}
 	fmt.Println("\nAll done!")
